@@ -47,11 +47,13 @@ download-skill/
    - 可选：海外 VPS 信息（没有就留空，自动跳过 VPS 通道）
 3. 进度查看用 AriaNg（https://ariang.mayswind.net/ ），首次使用在设置里把 RPC 指向 `localhost:6801`
 
-## 依赖
+## 依赖与致谢
+
+本技能在运行时**调度以下第三方开源项目**，它们均归各自原作者所有，以各自仓库声明的许可证为准；本仓库仅做调用与集成，不对其行为与可用性负责：
 
 - [aria2](https://aria2.github.io/)：多线程下载核心（JSON-RPC 模式）
 - [AriaNg](https://ariang.mayswind.net/)：下载进度 Web 界面
-- 公共 ghproxy 系列加速镜像：仅作调度，不隶属于本仓库，镜像列表会过期，技能内置健康检查与更新机制
+- 公共 ghproxy 系列加速镜像：仅作调度，不隶属于本仓库；镜像列表会过期，技能内置健康检查与更新机制
 
 ## 实战记录亮点
 
