@@ -244,6 +244,11 @@ $res.result   # gid，回报给用户
 
 ---
 
+## 实战记录（2026-08-19 官网直链/代理诊断）
+
+- **软件安装包先抓官网真实直链，别猜老域名**（2026-08-19 微信案例）：`dldir1.qq.com/weixin/Windows/WeChatSetup.exe` 解析出 58.222.16.147 慢节点仅 0.01MB/s 直连，官网页面（pc.weixin.qq.com）真实链接 `dldir1v6.qq.com/weixin/Universal/Windows/WeChatWin_4.1.13.exe` 同网络下 26-29MB/s，差约 20 倍。同一软件多 CDN 域名节点质量天差地别，下载前先抓官网页面里的真实链接（web_fetch 官网 → 提取 .exe 链接）
+- **代理变量陷阱**：系统设了 HTTP_PROXY/HTTPS_PROXY（如 127.0.0.1:7897）时，Python urllib 等默认走代理，测速/下载会拿到假慢数据；Node fetch（插件）和 curl 默认不走环境变量代理。诊断网络问题时先 `echo $env:HTTP_PROXY` 确认是否被代理干扰
+
 ## 全局约定
 
 1. **涉及下载的任务一律走本 SOP**，不区分来源，不临时另想方法
