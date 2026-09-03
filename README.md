@@ -31,21 +31,27 @@
 
 ```
 download-skill/
-├── SKILL.md              # 技能主文档（路由表、RPC 管理、降级策略、VPS 脚本）
-├── SOP.md                # 标准操作流程（步骤化 + 实战记录）
-├── config.example.ps1    # 配置文件模板（复制为 config.ps1 使用）
-├── .gitignore            # 忽略 config.ps1（个人环境信息不入库）
-└── LICENSE               # MIT
+├── SKILL.md                    # 技能主文档（运行配置 + 快速判断口诀，流程指向 SOP）
+├── SOP.md                      # 标准操作流程（唯一权威源：步骤 0-4 + 决策 D1-D5 + 降级表 + 实战记录）
+├── skill-dependencies.json     # 依赖清单（aria2c / download-progress 连接器，机器可读）
+├── references/
+│   ├── setup-guide.md          # 安装与代理配置指引
+│   └── vps-mode.md             # VPS 回传模式说明
+├── scripts/
+│   ├── check_environment.ps1   # 环境自检（aria2c / RPC / 下载目录）
+│   ├── vps-config.example.ps1  # VPS 配置模板（复制为 vps-config.ps1 后填写，勿提交真实配置）
+│   └── vps-download.ps1        # VPS 一键回传脚本
+├── .gitignore                  # 忽略 config.ps1 / vps-config.ps1（个人配置不入库）
+└── LICENSE                     # MIT
 ```
 
 ## 安装
 
 1. 将本目录放入平台的 skills 目录（HanaAgent：`<Hana数据目录>\skills\download`）
-2. 复制 `config.example.ps1` 为 `config.ps1`，填写：
-   - aria2c 路径与 RPC 端口（aria2 官网：https://aria2.github.io/ ）
-   - 默认下载目录
-   - 可选：海外 VPS 信息（没有就留空，自动跳过 VPS 通道）
-3. 进度查看用 AriaNg（https://ariang.mayswind.net/ ），首次使用在设置里把 RPC 指向 `localhost:6801`
+2. 运行 `scripts/check_environment.ps1` 做环境自检（aria2c / RPC / 下载目录），按提示修补缺失项
+3. （可选）需要 VPS 回传时：复制 `scripts/vps-config.example.ps1` 为 `vps-config.ps1`，填入服务器 `Host` / `SshPort` / `User` / `SshKey` / `LocalDir`。**此文件含个人服务器信息，不要提交到共享仓库或随技能分发给他人**（已在 .gitignore 排除）
+4. 进度查看用 AriaNg（https://ariang.mayswind.net/ ），首次使用在设置里把 RPC 指向 `localhost:6801`
+5. 网络诊断技巧：直连疑似卡顿时先 `echo $env:HTTP_PROXY` 确认是否被代理干扰；用 `scripts/socks5-proxy.py` 配 ssh `-o ProxyCommand` 可让 SSH 走本地 SOCKS5 代理连远端
 
 ## 依赖与致谢
 

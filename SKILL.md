@@ -3,72 +3,69 @@ name: download
 description: >
   通用下载技能（所有下载任务的统一入口，GitHub 下载是其中一类来源）。职责覆盖：GitHub Release /
   GitHub raw 仓库文件 / PyPI 包 / npm 包 / 官方安装脚本 / CDN 直链 / 一般网页文件等一切下载动作。
-  核心机制是「来源识别 → 通道路由」：GitHub 来源走国内加速代理 + aria2 RPC 守护（AriaNg 看进度），
-  PyPI 走清华镜像，npm 走 npmmirror，其余来源走官方镜像或 aria2 直连；所有来源统一走
-  「识别→下载→校验→交付→记录」流程骨架，完成后 SHA256 校验 + stage_files 交付。
+  核心机制是「来源识别 → 通道路由」：GitHub 来源一律走加速代理（决策 D1/D3，所有大小都加速），
+  小文件 ≤100MB 走插件 download-file 通道 + 对话流卡片，大文件 >100MB 走 aria2 RPC + AriaNg（决策 D2），
+  健康检查仅对 >50MB 触发（决策 D4）；PyPI 走清华镜像，npm 走 npmmirror，其余来源走官方镜像或 aria2 直连；
+  所有来源统一走「识别→路由→下载→校验→交付→记录」流程骨架，完成后 SHA256 校验 + stage_files 交付。
   当用户想下载任何文件（说「下载」「帮我下」「下载这个链接」「下载安装包/软件/APP/视频」等）、
   需要 GitHub 加速链接、或说「下载 GitHub 链接」「帮我下 GitHub 文件」「加速这个 GitHub 下载」时触发。
-  不处理 git clone 场景，也不处理需要登录认证的网盘/客户端下载（百度网盘、迅雷等）。
+  不处理 git clone 场景（已由 download-progress 插件 download-command 接替，见 SOP 路由表），也不处理需要登录认证的网盘/客户端下载（百度网盘、迅雷等）。
   **全局约定：所有需要下载的任务一律走本技能，不区分来源，标准操作流程见同目录 SOP.md。**
 default-enabled: false
+version: 1.0.0
+agent_created: true
 ---
 
 # Download Skill（通用下载）
 
-> 运行平台：HanaAgent（技能格式遵循其 SKILL.md 约定）。本技能为**平台无关的逻辑 + 本地配置**：
-> 所有本机路径、VPS 信息都在 `config.ps1`（由 `config.example.ps1` 复制而来）中，本文件不含任何个人环境信息。
+## 运行配置（首次使用前解析）
+
+本技能不直接写死本机路径，运行前按以下变量解析（首次使用询问用户或探测环境）：
+
+| 变量 | 含义 | 解析方式 |
+|------|------|----------|
+| `$Aria2c` | aria2c 可执行文件 | 优先读环境变量 `ARIA2C_EXE`；否则探测 `$env:USERPROFILE\.hanako\tools\aria2\aria2c.exe`；再全盘搜索 `aria2c.exe`（深度 5）；均无则降级输出直链 |
+| `$Conf` | aria2 RPC 配置文件 | 与 `$Aria2c` 同目录的 `aria2-rpc.conf` |
+| `$DownloadDir` | 默认下载目录 | 优先环境变量 `ARIA2_DOWNLOAD_DIR`；否则默认 `D:\Downloads`（Windows）/ `~/Downloads`（macOS、Linux），安装时可改成本机习惯目录 |
+| VPS 配置 | 海外回传服务器 | 见 `scripts/vps-config.example.ps1`（复制为 vps-config.ps1 后填写真实信息，不写死在正文） |
+
+> 依赖清单见 `skill-dependencies.json`；环境自检见 `scripts/check_environment.ps1`；安装与代理配置见 `references/setup-guide.md`；VPS 模式见 `references/vps-mode.md`。
 
 ## 职责
 
 **所有下载任务的统一入口**，GitHub 下载只是其中一类来源。执行顺序：
 
 1. **识别来源**（GitHub / PyPI / npm / 官方脚本 / CDN / 一般 URL）
-2. **选择通道**（按来源路由表，GitHub 走加速代理，PyPI 走清华镜像，npm 走 npmmirror，其余 aria2 直连）
-3. **下载**（主通道 aria2 RPC，AriaNg 看进度）
+2. **选择通道**（按来源路由表，GitHub 一律走加速代理，按大小选 download-file 通道或 aria2；PyPI 走清华镜像，npm 走 npmmirror，其余 aria2 直连）
+3. **下载**（≤100MB 插件 download-file 对话流卡片；>100MB aria2 RPC + AriaNg）
 4. **校验**（SHA256 对照官方 checksum，至少核对大小）
 5. **交付**（stage_files + 告知安装/使用方式）
 6. **记录**（SOP 实战记录追加经验）
 
 ```
-识别来源 → 选择通道 → aria2 提交 → AriaNg 看进度 → 校验 + stage_files 交付 → 记录
+识别来源 → 按路由表选通道（GitHub 一律加速拼接，≤100MB download-file / >100MB aria2）→ 提交下载 → 进度查看（≤100MB 卡片 / >100MB AriaNg）→ SHA256 校验 + stage_files 交付 → 记录
 ```
-
-## 安装与配置
-
-1. 将本目录放入平台的 skills 目录（HanaAgent：`<Hana数据目录>\skills\download`）
-2. 复制 `config.example.ps1` 为 `config.ps1`，填写你的 aria2 路径与默认下载目录
-3. 可选：配置 VPS 通道。没有 VPS 就留空，技能会自动跳过该通道，不影响主流程
-4. `config.ps1` 已被 `.gitignore` 忽略，不会误提交
 
 ## 来源识别与通道路由（核心决策表）
 
-拿到下载任务先对号入座，不要凭直觉选通道：
+完整路由表（含尺寸阈值、可视化层、各来源下载步骤）以同目录 **SOP.md → 步骤 0** 为唯一权威源，本文件不再重复维护。
 
-| 来源 | 识别特征 | 下载通道 | 备注 |
-|------|----------|----------|------|
-| GitHub Release | `github.com/{owner}/{repo}/releases/download/` | 加速代理 + aria2 | 见下方「GitHub 加速」章节 |
-| GitHub raw 文件 | `raw.githubusercontent.com/...` 或仓库内文件 | jsDelivr 优先（≤20MB），否则 ghproxy 系列代理 raw | `https://cdn.jsdelivr.net/gh/{owner}/{repo}@{tag}/{file}` |
-| GitHub 仓库压缩包 | `github.com/{owner}/{repo}/archive/...` | 加速代理 + aria2（代理同样适用 archive 路径） | 或 jsDelivr（≤20MB） |
-| PyPI 包 | `pypi.org/project/...` 或 `pip install xxx` | 清华镜像 TUNA | `pip download -i https://pypi.tuna.tsinghua.edu.cn/simple` 或 aria2 拉取镜像上的 wheel |
-| npm 包 | `npmjs.com/package/...` 或 `npm install xxx` | npmmirror | `https://registry.npmmirror.com/{pkg}/-/{pkg}-{version}.tgz` |
-| 官方安装脚本 | `get.docker.com`、`install.sh` 等 | 直接 Invoke-WebRequest 下载脚本 | 脚本内部再下载的资源按其 URL 来源重新路由 |
-| CDN 直链 | 各类 `*.cdn.*` / 对象存储 / 静态资源 URL | aria2 直连（多线程） | 加速代理只服务 github.com 域名 |
-| 一般网页文件 | 其他 http(s) URL | aria2 直连 | 大文件优先 aria2，小文件可 Invoke-WebRequest |
-| 需要登录/客户端的网盘 | 百度网盘、迅雷、夸克等 | **不处理** | 告知用户需自己用对应客户端，或已登录拿到直链再交回来 |
-
-**判断口诀**：域名为 github.com / raw.githubusercontent.com → 加速通道；pypi.org / pip → 清华镜像；npmjs / registry.npmjs.org → npmmirror；其余 → aria2 直连。
+**快速判断口诀**：
+- 域名为 github.com / raw.githubusercontent.com → 一律加速通道（100MB 仅选通道，不决定是否加速；raw 20MB 仅选 CDN 源）
+- pypi.org / pip → 清华镜像；npmjs / registry.npmjs.org → npmmirror
+- 其余 → aria2 直连；需要登录/客户端的网盘 → **不处理**
 
 ## 关键路径
 
-| 资源 | 路径 |
-|------|------|
-| aria2c 可执行文件 | `$DownloadConfig.Aria2Path`（config.ps1 配置） |
-| aria2c RPC 配置 | `$DownloadConfig.Aria2Conf`（config.ps1 配置） |
-| RPC 端口 | `$DownloadConfig.RpcPort`（默认 6801） |
-| 默认下载目录 | `$DownloadConfig.DownloadDir`（config.ps1 配置） |
+| 资源 | 变量 / 值 |
+|------|-----------|
+| aria2c 可执行文件 | `$Aria2c`（解析见上方「运行配置」） |
+| aria2c RPC 配置 | `$Conf`（与 `$Aria2c` 同目录的 `aria2-rpc.conf`） |
+| aria2c 会话文件 | 与 `$Aria2c` 同目录的 `session.txt` |
+| RPC 端口 | 6801 |
 | AriaNg 页面 | Hana 菜单 → AriaNg，或打开 `/api/plugins/ariang/page` |
 
-> 若 aria2c 在配置路径不存在，执行全局搜索 `Get-ChildItem -Path C:\ -Filter aria2c.exe -Recurse -ErrorAction SilentlyContinue -Depth 5` 定位实际位置。如果全盘不存在，输出直链让用户手动下载，**不要报错退出**。
+> 如果 `$Aria2c` 在默认位置不存在，执行全局搜索 `Get-ChildItem -Path C:\ -Filter aria2c.exe -Recurse -ErrorAction SilentlyContinue -Depth 5` 定位实际位置（或设 `ARIA2C_EXE` 环境变量直接指定）。如果全盘不存在，输出直链让用户手动下载，**不要报错退出**。
 
 ## GitHub 加速（GitHub 来源专用）
 
@@ -99,12 +96,12 @@ default-enabled: false
 
 ```powershell
 # 返回 200/206 且拿到 1024 bytes 即视为可用
-$target = 'https://{proxy}/' + $testUrl   # $testUrl 为目标 Release 原始链接
+$target = $proxy.TrimEnd('/') + '/' + $testUrl   # $proxy 为代理（如 https://v4.gh-proxy.org/），$testUrl 为目标 Release 原始链接
 $r = Invoke-WebRequest -Uri $target -Headers @{ Range = 'bytes=0-1023' } -Method Get -TimeoutSec 10 -UseBasicParsing
 if ($r.RawContentLength -ge 1024) { '代理可用' }
 ```
 
-下载大文件（>100MB）前建议先跑健康检查选最快可用代理；小文件直接按优先级表用 v4.gh-proxy.org 即可。
+**健康检查仅对 >50MB 文件触发**（D4）：小文件（≤50MB）直接按优先级表用第 1 顺位 `v4.gh-proxy.org` 拼接加速 URL，失败则按优先级表换下一个（不探测，只用 fall-through 逻辑）。>50MB 才按优先级顺序选第一个可用代理，因为大文件重试成本高。100MB 只决定提交通道（≤100MB 插件 download-file / >100MB aria2），不决定是否走代理、也不决定是否跑健康检查。
 
 ### GitHub raw 文件加速（≤20MB 用 jsDelivr，否则走代理）
 
@@ -113,13 +110,15 @@ jsDelivr:   https://cdn.jsdelivr.net/gh/{owner}/{repo}@{tag}/{file}
 代理方式:   https://{proxy}/https://raw.githubusercontent.com/{owner}/{repo}/{tag}/{file}
 ```
 
+两路都进插件 `download-file` 通道（决策 D5：raw 也一律进卡片，不走 aria2），进度在对话流；20MB 阈值仅决定走 jsDelivr 还是 ghproxy 拼接（都是加速源）。
+
 ## 非 GitHub 来源通道（快速参考）
 
 ### PyPI（清华镜像）
 
 ```powershell
 # 方式一：pip 直下（带依赖树）
-pip download -d $DownloadConfig.DownloadDir -i https://pypi.tuna.tsinghua.edu.cn/simple {package}=={version}
+pip download -d $DownloadDir -i https://pypi.tuna.tsinghua.edu.cn/simple {package}=={version}
 
 # 方式二：aria2 拉 wheel（先访问镜像 simple 页面拿文件名）
 # https://pypi.tuna.tsinghua.edu.cn/simple/{package}/ 页面列出所有版本文件
@@ -136,7 +135,7 @@ pip download -d $DownloadConfig.DownloadDir -i https://pypi.tuna.tsinghua.edu.cn
 ### 官方安装脚本
 
 ```powershell
-Invoke-WebRequest -Uri 'https://get.docker.com' -OutFile "$($DownloadConfig.DownloadDir)\get-docker.sh" -TimeoutSec 120 -UseBasicParsing
+Invoke-WebRequest -Uri 'https://get.docker.com' -OutFile '$DownloadDir\get-docker.sh' -TimeoutSec 120 -UseBasicParsing
 # 脚本下载完成后，脚本内部引用的资源按其实际 URL 来源重新走本路由表
 ```
 
@@ -148,10 +147,10 @@ Invoke-WebRequest -Uri 'https://get.docker.com' -OutFile "$($DownloadConfig.Down
 
 ### 检查 RPC 是否运行
 
-通过检查 RPC 端口是否在监听来判断守护是否存活：
+通过检查端口 6801 是否在监听来判断 RPC 守护是否存活：
 
 ```powershell
-$rpcRunning = $null -ne (netstat -ano | Select-String ":$($DownloadConfig.RpcPort)" | Select-String 'LISTENING')
+$rpcRunning = $null -ne (netstat -ano | Select-String ':6801' | Select-String 'LISTENING')
 ```
 
 ### 启动 RPC 守护
@@ -159,8 +158,8 @@ $rpcRunning = $null -ne (netstat -ano | Select-String ":$($DownloadConfig.RpcPor
 如果 RPC 未运行，以后台静默方式启动：
 
 ```powershell
-$aria2c = $DownloadConfig.Aria2Path
-$conf = $DownloadConfig.Aria2Conf
+$aria2c = '$Aria2c'
+$conf = '$Conf'
 
 # 若路径不存在，全局搜索
 if (-not (Test-Path $aria2c)) {
@@ -172,7 +171,7 @@ Start-Process -WindowStyle Hidden -FilePath $aria2c -ArgumentList "--conf-path=$
 
 # 等待 RPC 准备就绪（最多 5 秒）
 $timeout = 5
-while ($timeout -gt 0 -and ($null -eq (netstat -ano | Select-String ":$($DownloadConfig.RpcPort)" | Select-String 'LISTENING'))) {
+while ($timeout -gt 0 -and ($null -eq (netstat -ano | Select-String ':6801' | Select-String 'LISTENING'))) {
     Start-Sleep -Milliseconds 500
     $timeout -= 0.5
 }
@@ -181,6 +180,8 @@ while ($timeout -gt 0 -and ($null -eq (netstat -ano | Select-String ":$($Downloa
 启动后 aria2c 会持续运行在后台，监听 RPC 请求。下载全部完成后不会自动退出（保持等待新任务）。如需关闭，用户可告诉你想停止 aria2c 守护，或者手动在任务管理器中结束 aria2c.exe。
 
 ## 通过 RPC 提交下载
+
+> 本节仅适用于 **>100MB 走 aria2 通道**的情况。≤100MB 走插件 `download-progress_download-file` 通道，详见 SOP.md 步骤 1A。
 
 构造最终下载 URL（GitHub 来源 = 加速链接，其余 = 原始 URL），通过 JSON-RPC 提交任务：
 
@@ -192,7 +193,7 @@ $body = @{
     params = @(
         , @($url)
         , @{
-            dir = $DownloadConfig.DownloadDir
+            dir = '$DownloadDir'
             'check-certificate' = 'false'
             'max-connection-per-server' = '10'
             'split' = '10'
@@ -200,16 +201,28 @@ $body = @{
     )
 } | ConvertTo-Json -Compress
 
-$rpcResult = Invoke-RestMethod -Uri "http://localhost:$($DownloadConfig.RpcPort)/jsonrpc" -Method Post -Body $body -ContentType 'application/json'
+$rpcResult = Invoke-RestMethod -Uri 'http://localhost:6801/jsonrpc' -Method Post -Body $body -ContentType 'application/json'
 ```
 
 如果用户指定了自定义下载目录，在 `dir` 参数中传入。
 
+## aria2 路径自检（执行前先跑）
+
+```powershell
+$aria2c = '$Aria2c'
+if (-not (Test-Path $aria2c)) {
+    $found = Get-ChildItem -Path C:\ -Filter aria2c.exe -Recurse -ErrorAction SilentlyContinue -Depth 5 | Select -First 1
+    if (-not $found) { throw 'aria2c 未安装，请使用降级策略' }
+    $aria2c = $found.FullName
+}
+$conf = [System.IO.Path]::GetDirectoryName($aria2c) + '\aria2-rpc.conf'
+```
+
 ## 完整流程（自检 → RPC → 提交）
 
 ```powershell
-$aria2c = $DownloadConfig.Aria2Path
-$conf = $DownloadConfig.Aria2Conf
+$aria2c = '$Aria2c'
+$conf = '$Conf'
 $url = '最终下载 URL（GitHub 来源已拼好加速前缀）'
 
 # 0. 自检路径
@@ -221,7 +234,7 @@ if (-not (Test-Path $aria2c)) {
 }
 
 # 1. 检查 / 启动 RPC
-$rpcRunning = $null -ne (netstat -ano | Select-String ":$($DownloadConfig.RpcPort)" | Select-String 'LISTENING')
+$rpcRunning = $null -ne (netstat -ano | Select-String ':6801' | Select-String 'LISTENING')
 if (-not $rpcRunning) {
     Start-Process -WindowStyle Hidden -FilePath $aria2c -ArgumentList "--conf-path=$conf"
     Start-Sleep -Seconds 2
@@ -232,10 +245,10 @@ $body = @{
     jsonrpc = '2.0'
     id = [guid]::NewGuid().ToString()
     method = 'aria2.addUri'
-    params = @(, @($url), @{ dir = $DownloadConfig.DownloadDir; 'check-certificate' = 'false'; 'max-connection-per-server' = '10'; 'split' = '10' })
+    params = @(, @($url), @{ dir = '$DownloadDir'; 'check-certificate' = 'false'; 'max-connection-per-server' = '10'; 'split' = '10' })
 } | ConvertTo-Json -Compress
 
-Invoke-RestMethod -Uri "http://localhost:$($DownloadConfig.RpcPort)/jsonrpc" -Method Post -Body $body -ContentType 'application/json'
+Invoke-RestMethod -Uri 'http://localhost:6801/jsonrpc' -Method Post -Body $body -ContentType 'application/json'
 ```
 
 ## 输出
@@ -243,11 +256,21 @@ Invoke-RestMethod -Uri "http://localhost:$($DownloadConfig.RpcPort)/jsonrpc" -Me
 告知用户以下信息：
 
 1. 下载任务已提交（包含文件名、大小信息，如果有）
-2. 打开 Hana 菜单 → AriaNg，或访问 `/api/plugins/ariang/page` 实时查看下载进度
-3. 最终下载链接（GitHub 来源给加速链接，方便在其他设备上手动下载）
-4. 下载完成后：校验 SHA256（与官方 checksum 或来源元数据对照），再 stage_files 交付
+2. **≤100MB**：进度在对话流卡片（插件 download-file 通道），下载完成卡片显示 100% + 可直接打开/复制路径
+3. **>100MB**：进度在 AriaNg（aria2 通道），打开 Hana 菜单 → AriaNg，或访问 `/api/plugins/ariang/page` 查看
+4. 最终下载链接（GitHub 来源给加速链接，方便在其他设备上手动下载）
+5. 下载完成后：校验 SHA256（与官方 checksum 或来源元数据对照），再 stage_files 交付
 
-输出示例：
+输出示例（≤100MB 插件 download-file）：
+
+```
+任务已提交到 download-file：filename.zip（5.2 MB）
+对话流卡片实时显示进度，完成后可点卡片直接打开。
+加速链接：{加速链接}
+原始链接：{原始链接}
+```
+
+输出示例（>100MB aria2）：
 
 ```
 任务已提交到 aria2c：filename.zip
@@ -275,7 +298,7 @@ aria2 RPC 提交、CLI 直调、VPS 模式三条通道都要过这一关。
 
 1. 打开 AriaNg 页面
 2. 点击左上角「⚙ 设置」→「RPC」标签
-3. 「主机」保持 `localhost`，「端口」改为 `$DownloadConfig.RpcPort`（默认 6801）
+3. 「主机」保持 `localhost`，「端口」改为 `6801`
 4. 点击「连接」按钮，状态变为「已连接」即成功
 5. 设置会自动保存到浏览器，后续无需重复配置
 
@@ -293,13 +316,12 @@ Get-Process aria2c | Where-Object { $_.Id -ne $null } | Stop-Process
 
 | 情况 | 处理 |
 |------|------|
-| aria2c 路径不存在 | 先全局搜索（深度 5），找到了则用实际路径；全盘不存在才输出直链让用户手动下载 |
+| aria2c 路径不存在 | 先全局搜索 `Get-ChildItem -Path C:\ -Filter aria2c.exe -Recurse -Depth 5`，找到了则用实际路径；全盘不存在才输出直链让用户手动下载 |
 | RPC 启动失败或端口被占用 | 降级为 CLI 直调模式下载（`aria2c -x 10 -s 10 -o "filename" "URL"`） |
 | RPC 提交失败 | 降级为 CLI 直调模式下载 |
 | GitHub 加速代理不可达 | 按优先级表依次降级（v4.gh-proxy.org → gh.zwy.one → ghproxy.net → gh-proxy.com → ghproxy.homeboyc.cn → mirror.ghproxy.com → ghfast.top），全不通则访问 ghproxy.link 找新镜像或 Hana 直连（Invoke-WebRequest 长超时 600s） |
 | 代理列表全部过期 | 访问 `https://ghproxy.link/`（动态镜像列表站，需 JS 渲染则用 browser）或搜索「GitHub 镜像站汇总」获取新域名，验证后写入本表 |
 | 私有仓库 Release 资产 | 镜像无法代理认证流量，用 GitHub API + token 直连获取 |
-| 本地代理/VPS 均未配置 | 跳过 VPS 通道，继续走公共代理降级链 |
 | 非 GitHub 来源 | 按路由表走源内通道（清华镜像 / npmmirror / 官方镜像 / aria2 直连），同样完成校验 + 交付 + 记录；来源无法识别则告知用户 |
 | 需要登录/客户端的网盘 | 不处理，告知用户边界：需自己在对应客户端下载，或提供已登录会话的直链 |
 | 全部失败 | 输出直链让用户手动下载，不报错退出 |
@@ -307,9 +329,9 @@ Get-Process aria2c | Where-Object { $_.Id -ne $null } | Stop-Process
 ### CLI 直调降级示例
 
 ```powershell
-$aria2c = $DownloadConfig.Aria2Path
+$aria2c = '$Aria2c'
 $url = '最终下载 URL（GitHub 来源已拼好加速前缀）'
-$out = "$($DownloadConfig.DownloadDir)\{filename}"
+$out = '$DownloadDir\{filename}'
 & $aria2c -x 10 -s 10 --check-certificate=false -o "$out" "$url"
 ```
 
@@ -318,171 +340,21 @@ $out = "$($DownloadConfig.DownloadDir)\{filename}"
 ```powershell
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $url = '最终下载 URL'
-$out = "$($DownloadConfig.DownloadDir)\{filename}"
+$out = '$DownloadDir\{filename}'
 Invoke-WebRequest -Uri $url -OutFile $out -TimeoutSec 600 -UseBasicParsing
 ```
 
 ---
 
-## VPS 模式（GitHub 加速专用通道）
+## VPS 模式（GitHub 加速专用回传通道）
 
-当本地 aria2c + 国内代理速度不理想时，使用海外 VPS 先直连 GitHub，再把完整文件拉回本地。优先尝试本地代理直连，其次使用 SSH 隧道，最后使用 `scp`。三种方式都在下载结束后清理 VPS 临时文件；A、B 模式还会关闭本次启动的 HTTP 文件服务。
+> 本章节已抽取到 `references/vps-mode.md`，一键脚本在 `scripts/vps-download.ps1`，服务器配置先复制 `scripts/vps-config.example.ps1` 为 `vps-config.ps1` 后填写真实信息，**不要随技能分发**。
+> 当本地 aria2c + 国内代理速度不理想时，用海外 VPS 先直连 GitHub 再把文件拉回本地：A 代理直连 → B SSH 隧道 → C SSH+scp 自动降级，结束后按本次取得的 PID 精确清理 VPS 临时文件。
 
-### VPS 配置
-
-VPS 参数全部来自 `config.ps1` 的 `$DownloadConfig.Vps`（见 `config.example.ps1`）。未配置 `Host` 时本通道自动跳过。所有远程 shell 命令都通过变量传给 SSH，命令模板使用单引号，避免 PowerShell 在本地展开 `$`、`&` 等字符。
-
-```powershell
-$vps = $DownloadConfig.Vps
-if (-not $vps.Host) { throw '未配置 VPS（config.ps1），跳过 VPS 通道' }
-```
-
-### 三种子模式（按优先级）
-
-#### A. 代理直连（最快，推荐）
-
-前提是本地 Clash/v2rayN 等代理客户端已开启，并且代理允许访问 VPS 的 HTTP 端口。流程为：VPS 用 `wget` 直连 GitHub 下载，本地检测 `7890`、`10809`、`10808` 等常见 HTTP 代理端口，然后通过代理直接请求 `http://{VPS_IP}:{HttpPort}/文件名`。此模式不建立 SSH 数据隧道，速度取决于本地代理线路质量。代理不可用或无法访问 VPS 时自动降级到 B。
-
-#### B. SSH 隧道（兼容，保底）
-
-本地没有可用代理时使用。流程为：VPS 用 `wget` 下载，启动临时 HTTP 服务，再建立 `-L {HttpPort}:127.0.0.1:{HttpPort}` 的 SSH 隧道，本地从 `http://127.0.0.1:{HttpPort}/文件名` 拉取。实测回传速度约 1 MB/s。隧道在后台运行，并在 `finally` 清理块中关闭。
-
-#### C. SSH + scp（最简，无额外服务）
-
-A、B 都失败时使用。VPS 用 `wget` 下载，然后直接通过 `scp` 拉回本地，最后删除 VPS 文件。该模式无需启动 HTTP 文件服务，传输速度与 SSH 隧道相近，约 1 MB/s。
-
-### 完整一键下载脚本（自动检测与降级）
-
-将下面脚本保存为 `.ps1`，或直接复制到 PowerShell 执行。输入必须是 GitHub Release 附件的原始 URL。脚本要求已通过 `config.ps1` 定义 `$DownloadConfig`（内含 `Aria2Path` 等基础项与 `Vps` 配置；脚本内会自动读取）。
+快速使用：
 
 ```powershell
-param([Parameter(Mandatory = $true)][string]$githubUrl)
-
-# 读取配置（config.ps1 位于本脚本同目录）
-. (Join-Path $PSScriptRoot 'config.ps1')
-$vps = $DownloadConfig.Vps
-if (-not $vps.Host) { throw '未配置 VPS（config.ps1），跳过 VPS 通道' }
-
-$uri = [Uri]$githubUrl
-if ($uri.Host -ne 'github.com' -or $uri.AbsolutePath -notmatch '/releases/download/') {
-    throw '只接受 github.com 的 Release 附件原始 URL。'
-}
-$filename = [Uri]::UnescapeDataString([IO.Path]::GetFileName($uri.AbsolutePath))
-if ([string]::IsNullOrWhiteSpace($filename) -or $filename -notmatch '^[A-Za-z0-9._-]+$') {
-    throw "文件名不安全或无法解析：$filename"
-}
-if (-not (Test-Path -LiteralPath $vps.SshKey)) { throw "SSH 密钥不存在：$($vps.SshKey)" }
-New-Item -ItemType Directory -Force -Path $DownloadConfig.DownloadDir | Out-Null
-$localPath = Join-Path $DownloadConfig.DownloadDir $filename
-if (Test-Path -LiteralPath $localPath) { Remove-Item -Force -LiteralPath $localPath }
-
-$sshExe = (Get-Command ssh.exe -ErrorAction Stop).Source
-$scpExe = (Get-Command scp.exe -ErrorAction Stop).Source
-$target = '{0}@{1}' -f $vps.User, $vps.Host
-$sshArgs = @('-i', $vps.SshKey, '-p', [string]$vps.SshPort,
-    '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=accept-new')
-$scpArgs = @('-i', $vps.SshKey, '-P', [string]$vps.SshPort,
-    '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=accept-new')
-$serverPid = $null
-$tunnel = $null
-$serverStarted = $false
-
-function Invoke-VpsCommand([string]$remoteCommand) {
-    $output = & $script:sshExe @script:sshArgs $script:target $remoteCommand 2>&1
-    if ($LASTEXITCODE -ne 0) { throw (($output | Out-String).Trim()) }
-    return @($output)
-}
-function Start-VpsHttpServer {
-    if ($script:serverStarted) { return }
-    $command = 'mkdir -p ''{0}''; nohup python3 -m http.server {1} --bind 0.0.0.0 --directory ''{0}'' >/dev/null 2>&1 & echo $!' -f $script:vps.Dldir, $script:vps.HttpPort
-    $output = Invoke-VpsCommand $command
-    $pidText = ($output | Select-Object -Last 1).ToString().Trim()
-    if ($pidText -notmatch '^\d+$') { throw "无法取得 HTTP 服务 PID：$pidText" }
-    $script:serverPid = [int]$pidText
-    $script:serverStarted = $true
-    Start-Sleep -Seconds 1
-}
-function Start-VpsTunnel {
-    if ($script:tunnel -and -not $script:tunnel.HasExited) { return }
-    $tunnelArgs = $script:sshArgs + @('-N', '-L', ('{0}:127.0.0.1:{0}' -f $script:vps.HttpPort), $script:target)
-    $script:tunnel = Start-Process -FilePath $script:sshExe -ArgumentList $tunnelArgs -WindowStyle Hidden -PassThru
-    Start-Sleep -Seconds 1
-    if ($script:tunnel.HasExited) { throw 'SSH 隧道启动后立即退出。' }
-}
-function Test-HttpEndpoint([string]$url, [int]$proxyPort) {
-    try {
-        $params = @{ Uri = $url; Method = 'Head'; TimeoutSec = 8; UseBasicParsing = $true; ErrorAction = 'Stop' }
-        if ($proxyPort -gt 0) { $params.Proxy = 'http://127.0.0.1:{0}' -f $proxyPort }
-        Invoke-WebRequest @params | Out-Null
-        return $true
-    } catch { return $false }
-}
-
-try {
-    $prepare = 'mkdir -p ''{0}''; rm -f ''{0}/{1}''' -f $vps.Dldir, $filename
-    Invoke-VpsCommand $prepare | Out-Null
-    $remoteFile = '{0}/{1}' -f $vps.Dldir, $filename
-    $download = 'wget -q --tries=3 --timeout=60 -O ''{0}'' ''{1}'' && test -s ''{0}''' -f $remoteFile, $githubUrl, $remoteFile
-    Write-Host '[VPS] 正在通过海外直连下载 GitHub 文件...'
-    Invoke-VpsCommand $download | Out-Null
-    Write-Host '[VPS] 下载完成，开始选择回传通道。'
-
-    $proxyPort = $null
-    foreach ($candidate in @(7890, 10809, 10808, 7897)) {
-        Start-VpsHttpServer
-        $probe = 'http://{0}:{1}/{2}' -f $vps.Host, $vps.HttpPort, $filename
-        if (Test-HttpEndpoint $probe $candidate) { $proxyPort = $candidate; break }
-    }
-    if ($proxyPort) {
-        Write-Host "[A] 使用本地 HTTP 代理端口 $proxyPort（代理直连）。"
-        $request = @{ Uri = $probe; Proxy = 'http://127.0.0.1:{0}' -f $proxyPort; OutFile = $localPath; TimeoutSec = 600; UseBasicParsing = $true; ErrorAction = 'Stop' }
-        Invoke-WebRequest @request
-    } else {
-        Write-Host '[A] 未检测到可用本地代理，降级到 SSH 隧道。'
-        Start-VpsHttpServer
-        Start-VpsTunnel
-        $probe = 'http://127.0.0.1:{0}/{1}' -f $vps.HttpPort, $filename
-        for ($i = 0; $i -lt 15; $i++) {
-            if (Test-HttpEndpoint $probe 0) { break }
-            Start-Sleep -Seconds 1
-        }
-        Invoke-WebRequest -Uri $probe -OutFile $localPath -TimeoutSec 600 -UseBasicParsing -ErrorAction Stop
-    }
-    if (-not (Test-Path -LiteralPath $localPath) -or (Get-Item -LiteralPath $localPath).Length -le 0) { throw '本地文件为空。' }
-    $file = Get-Item -LiteralPath $localPath
-    Write-Host (('[完成] {0}，{1:N1} MB。' -f $file.Name, ($file.Length / 1MB)))
-} catch {
-    if (Test-Path -LiteralPath $localPath) { Remove-Item -Force -LiteralPath $localPath -ErrorAction SilentlyContinue }
-    Write-Warning (('[A/B] 回传失败：{0}' -f $_.Exception.Message))
-    Write-Host '[C] 改用 SSH + scp 回传（不依赖 HTTP 服务）。'
-    try {
-        $source = '{0}:{1}' -f $target, $remoteFile
-        $copyArgs = $script:scpArgs + @($source, $localPath)
-        & $script:scpExe @copyArgs
-        if ($LASTEXITCODE -ne 0) { throw 'scp 返回非零退出码。' }
-        if (-not (Test-Path -LiteralPath $localPath) -or (Get-Item -LiteralPath $localPath).Length -le 0) { throw 'scp 后本地文件为空。' }
-        $file = Get-Item -LiteralPath $localPath
-        Write-Host (('[完成] {0}，{1:N1} MB。' -f $file.Name, ($file.Length / 1MB)))
-    } catch {
-        throw ('三种 VPS 回传模式均失败：{0}' -f $_.Exception.Message)
-    }
-} finally {
-    if ($script:tunnel -and -not $script:tunnel.HasExited) { Stop-Process -Id $script:tunnel.Id -Force -ErrorAction SilentlyContinue }
-    if ($script:serverPid) {
-        $stop = 'kill {0} 2>/dev/null || true; rm -f ''{1}/{2}''' -f $script:serverPid, $script:vps.Dldir, $filename
-        try { Invoke-VpsCommand $stop | Out-Null } catch { Write-Warning ('VPS 清理失败：{0}' -f $_.Exception.Message) }
-    } else {
-        $clean = 'rm -f ''{0}/{1}''' -f $vps.Dldir, $filename
-        try { Invoke-VpsCommand $clean | Out-Null } catch { }
-    }
-}
+# 1. 复制 scripts/vps-config.example.ps1 为 vps-config.ps1 后填入 Host / SshPort / User / SshKey / LocalDir
+# 2. 运行（输入为 GitHub Release 附件原始 URL）
+.\scripts\vps-download.ps1 -githubUrl "https://github.com/{owner}/{repo}/releases/download/{tag}/{filename}"
 ```
-
-### 清理流程与行为约束
-
-- 无论 A、B、C 哪个模式成功，`finally` 都会删除 VPS 上的临时文件。
-- A、B 启动的 HTTP 服务会按本次取得的 PID 精确关闭，不使用可能误杀其他服务的 `pkill -f`。
-- B 的本地 SSH 隧道进程会在结束时关闭；C 不启动 HTTP 服务，因此只执行文件清理。
-- 如果脚本中途被强制终止，可手动清理 VPS：`ssh -i <密钥> -p <端口> <用户>@<VPS IP> 'rm -f /tmp/github-dl/*'`。
-
-<!-- VPS 端到端验证记录（2026-07-30）：使用 7.3 MB 的安装包执行一键脚本。VPS wget 3.24s 完成；A 模式四个常见代理端口全部不可达，脚本自动降级到 B 模式 SSH 隧道；B 模式因启动后立即发起请求可能隧道未就绪，需带 1s×15 次重试，改进后回传成功。最终本地文件大小与 GitHub Release 元数据一致，SHA256 校验通过；C 模式 scp 单次实测 36.5s（可作为 A/B 全部失败时的兜底）。`finally` 块会按本次启动的 PID 精确关闭 HTTP 服务并删除 VPS 临时文件。 -->

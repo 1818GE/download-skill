@@ -1,0 +1,44 @@
+{
+  "skill": "download",
+  "version": "1.0.0",
+  "description": "通用下载技能：来源识别 → 通道路由 → 校验 → 交付。依赖本地 aria2c 与 download-progress 连接器。",
+  "dependencies": {
+    "binaries": [
+      {
+        "name": "aria2c",
+        "required": true,
+        "for": ">100MB 大文件通道（aria2 RPC + AriaNg）",
+        "detect": "scripts/check_environment.ps1",
+        "search": [
+          "环境变量 ARIA2C_EXE",
+          "$env:USERPROFILE\\.hanako\\tools\\aria2\\aria2c.exe",
+          "全盘搜索 aria2c.exe（深度 5）"
+        ],
+        "fallback": "未找到则降级输出直链让用户手动下载，不报错退出"
+      }
+    ],
+    "connectors": [
+      {
+        "name": "download-progress",
+        "required": true,
+        "provides": ["download-file", "download-wait", "download-command", "stage_files"],
+        "for": "≤100MB 小文件对话流卡片通道 + 大文件兜底 + 交付",
+        "install": "在连接器管理中连接 download-progress；未连接时 check_environment.ps1 会提示"
+      }
+    ],
+    "optional": [
+      {
+        "name": "海外 VPS（SSH 可达）",
+        "required": false,
+        "for": "VPS 回传模式（本地代理 / aria2 慢时兜底，见 references/vps-mode.md）",
+        "config": "scripts/vps-config.example.ps1（复制为 vps-config.ps1 后填写真实信息，不要提交到共享仓库）"
+      }
+    ]
+  },
+  "environment": {
+    "variables": {
+      "ARIA2C_EXE": "可选，直接指定 aria2c 可执行文件路径",
+      "ARIA2_DOWNLOAD_DIR": "可选，指定默认下载目录（默认 D:\\Downloads）"
+    }
+  }
+}
