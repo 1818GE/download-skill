@@ -1,6 +1,7 @@
 # 通用下载 SOP（标准操作流程）
 
-> 版本：v2.1（2026-08-27，下载效率改善 · 路由表重构。5 项决策落地：D1/D3 GitHub 来源全部走加速；D2 进度边界 100MB 划定 plugin card vs AriaNg；D4 健康检查触发 >50MB；D5 小文件用 download-file + 加速 URL 拼接。原有 v2.0 路由表与实战记录全部保留，仅追加本轮变更点）
+> 版本：v2.2（2026-11-08，安全边界整改。移除全部 `check-certificate=false`（SKILL.md / SOP.md 共 5 处），证书校验默认开启；修正「无官方摘要时核对文件大小」表述，大小一致不能作为校验通过依据；新增「TLS 与来源校验纪律」小节。上一版 v2.1 的路由决策 D1-D5 全部保留，仅收紧安全边界）
+> 上一版：v2.1（2026-08-27，下载效率改善 · 路由表重构。5 项决策落地：D1/D3 GitHub 来源全部走加速；D2 进度边界 100MB 划定 plugin card vs AriaNg；D4 健康检查触发 >50MB；D5 小文件用 download-file + 加速 URL 拼接。原有 v2.0 路由表与实战记录全部保留，仅追加本轮变更点）
 > 上一版：v2.0（2026-08-18，定位升级：从「GitHub 下载 SOP」升级为「通用下载 SOP」。核心变化：新增来源识别与通道路由表（GitHub/PyPI/npm/官方脚本/CDN/一般 URL 各自的最优通道），GitHub 加速从"主体"降为"一类来源"，全来源统一走 识别→下载→校验→交付→记录 骨架）
 > 适用范围：**所有需要下载的任务一律走本 SOP，不区分来源**。GitHub Release / GitHub raw / PyPI 包 / npm 包 / 官方安装脚本 / CDN 直链 / 一般网页文件 / 其他任何下载动作，都默认启用本流程，不临时想其他办法。
 
@@ -245,7 +246,7 @@ $body = @{
     jsonrpc = '2.0'
     id = [guid]::NewGuid().ToString()
     method = 'aria2.addUri'
-    params = @(, @($url), @{ dir = $DownloadDir; 'check-certificate' = 'false'; 'max-connection-per-server' = '10'; 'split' = '10' })
+    params = @(, @($url), @{ dir = $DownloadDir; 'max-connection-per-server' = '10'; 'split' = '10' })
 } | ConvertTo-Json -Compress
 $res = Invoke-RestMethod -Uri 'http://localhost:6801/jsonrpc' -Method Post -Body $body -ContentType 'application/json'
 $res.result   # gid，回报给用户
@@ -274,9 +275,26 @@ $res.result   # gid，回报给用户
    ```powershell
    Get-FileHash '{filePath}' -Algorithm SHA256
    ```
-   对照来源的官方 checksum（GitHub Release 页 / PyPI 元数据 / 官方发布页）；没有官方 checksum 时至少核对文件大小与来源元数据一致
+   对照来源的官方摘要（SHA256/SHA512，GitHub Release 页 / PyPI 元数据 / 官方发布页 / 上游 checksum 文件）；没有官方摘要时**不得以大小一致作为校验通过依据**——大小一致 ≠ 内容一致，只能发现明显损坏（截断/空文件），此时交付必须显式标注「来源真实性未校验」并说明仅做了大小与元数据一致性初筛，由用户决定是否使用
 3. 交付：用 `stage_files` 把文件交付给用户（Hana 会话内可直接取）
 4. 说明安装/使用方式（APK → 传到手机安装覆盖旧版；exe → 直接运行；whl → pip install 本地文件等）
+
+---
+
+## TLS 与来源校验纪律
+
+**证书校验默认开启，不因兼容性关闭。** aria2 的 `check-certificate` 保持默认 true；`Invoke-WebRequest` 使用系统默认证书链验证。加速镜像或代理出现证书异常时的正确处置是**换下一个镜像**（按优先级表 fall-through），不是关闭校验。
+
+**文件大小不能证明来源真实性。** 同尺寸内容可以被替换，大小一致只能用于发现明显损坏（截断/空文件），不能作为校验通过的结论。校验优先级：
+1. 官方发布 SHA256/SHA512 摘要（GitHub Release 页、PyPI 元数据、官方发布页、上游 checksum 文件）
+2. 官方签名（GPG/sigstore/minisign）验证
+3. 以上皆无 → 交付时必须显式标注「**来源真实性未校验**」，并说明仅做了大小与元数据一致性初筛，由用户决定是否使用
+
+**唯一允许关闭证书校验的场景**（需同时满足，缺一不可）：
+- 用户明确知情并同意该次下载接受风险（如自建自签名代理、内网镜像）
+- 仅对当次下载生效，不写入配置、不固化为脚本默认
+- 必须同时提供独立可信的摘要或签名校验
+- 在交付说明中记录：关闭原因、影响范围、已采取的补偿校验
 
 ---
 
@@ -284,8 +302,9 @@ $res.result   # gid，回报给用户
 
 | 情况 | 处理 |
 |------|------|
+| 镜像证书异常 / 证书校验失败 | **不关闭校验**，按优先级表依次换镜像；全部镜像证书异常时改用 Hana 直连（Invoke-WebRequest 长超时 600s），仍不通则输出直链并说明风险 |
 | aria2c 路径不存在 | 先全局搜索（深度 5），全盘没有才输出直链让用户手动下载 |
-| RPC 启动失败 / 端口被占用 | 降级 CLI 直调：`& $aria2c -x 10 -s 10 --check-certificate=false -o "$DownloadDir\{file}" "{url}"` |
+| RPC 启动失败 / 端口被占用 | 降级 CLI 直调：`& $aria2c -x 10 -s 10 -o "$DownloadDir\{file}" "{url}"` |
 | RPC 提交失败 | 同上，CLI 直调 |
 | GitHub 加速代理不可达 | 按优先级表依次换（v4.gh-proxy.org → gh.zwy.one → ghproxy.net → gh-proxy.com → ghproxy.homeboyc.cn → mirror.ghproxy.com → ghfast.top）→ 全不通则访问 ghproxy.link 找新镜像 → 再不行 Hana 直连（Invoke-WebRequest 长超时 600s） |
 | 私有仓库 Release 资产 | 镜像无法代理认证流量，GitHub API + token 直连 |

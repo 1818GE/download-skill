@@ -12,7 +12,7 @@ description: >
   不处理 git clone 场景（已由 download-progress 插件 download-command 接替，见 SOP 路由表），也不处理需要登录认证的网盘/客户端下载（百度网盘、迅雷等）。
   **全局约定：所有需要下载的任务一律走本技能，不区分来源，标准操作流程见同目录 SOP.md。**
 default-enabled: false
-version: 1.0.0
+version: 2.1.0
 agent_created: true
 ---
 
@@ -38,7 +38,7 @@ agent_created: true
 1. **识别来源**（GitHub / PyPI / npm / 官方脚本 / CDN / 一般 URL）
 2. **选择通道**（按来源路由表，GitHub 一律走加速代理，按大小选 download-file 通道或 aria2；PyPI 走清华镜像，npm 走 npmmirror，其余 aria2 直连）
 3. **下载**（≤100MB 插件 download-file 对话流卡片；>100MB aria2 RPC + AriaNg）
-4. **校验**（SHA256 对照官方 checksum，至少核对大小）
+4. **校验**（SHA256/SHA512 对照官方摘要；无官方摘要时显式标注「来源真实性未校验」——大小一致只能发现明显损坏，不能作为校验通过依据）
 5. **交付**（stage_files + 告知安装/使用方式）
 6. **记录**（SOP 实战记录追加经验）
 
@@ -194,7 +194,6 @@ $body = @{
         , @($url)
         , @{
             dir = '$DownloadDir'
-            'check-certificate' = 'false'
             'max-connection-per-server' = '10'
             'split' = '10'
         }
@@ -245,7 +244,7 @@ $body = @{
     jsonrpc = '2.0'
     id = [guid]::NewGuid().ToString()
     method = 'aria2.addUri'
-    params = @(, @($url), @{ dir = '$DownloadDir'; 'check-certificate' = 'false'; 'max-connection-per-server' = '10'; 'split' = '10' })
+    params = @(, @($url), @{ dir = '$DownloadDir'; 'max-connection-per-server' = '10'; 'split' = '10' })
 } | ConvertTo-Json -Compress
 
 Invoke-RestMethod -Uri 'http://localhost:6801/jsonrpc' -Method Post -Body $body -ContentType 'application/json'
@@ -312,10 +311,28 @@ Get-Process aria2c | Where-Object { $_.Id -ne $null } | Stop-Process
 
 或者告诉 Hana"停掉 aria2c"，她会帮你执行。
 
+## TLS 与来源校验纪律
+
+**证书校验默认开启，不因兼容性关闭。** aria2 的 `check-certificate` 保持默认 true；`Invoke-WebRequest` 使用系统默认证书链验证。加速镜像或代理出现证书异常时的正确处置是**换下一个镜像**（按优先级表 fall-through），不是关闭校验。
+
+**文件大小不能证明来源真实性。** 同尺寸内容可以被替换，大小一致只能用于发现明显损坏（截断/空文件），不能作为校验通过的结论。校验优先级：
+1. 官方发布 SHA256/SHA512 摘要（GitHub Release 页、PyPI 元数据、官方发布页、上游 checksum 文件）
+2. 官方签名（GPG/sigstore/minisign）验证
+3. 以上皆无 → 交付时必须显式标注「**来源真实性未校验**」，并说明仅做了大小与元数据一致性初筛，由用户决定是否使用
+
+**唯一允许关闭证书校验的场景**（需同时满足，缺一不可）：
+- 用户明确知情并同意该次下载接受风险（如自建自签名代理、内网镜像）
+- 仅对当次下载生效，不写入配置、不固化为脚本默认
+- 必须同时提供独立可信的摘要或签名校验
+- 在交付说明中记录：关闭原因、影响范围、已采取的补偿校验
+
+---
+
 ## 降级策略
 
 | 情况 | 处理 |
 |------|------|
+| 镜像证书异常 / 证书校验失败 | **不关闭校验**，按优先级表换下一个镜像；全部镜像证书异常时改用 Hana 直连（Invoke-WebRequest 长超时 600s），仍不通则输出直链并说明风险 |
 | aria2c 路径不存在 | 先全局搜索 `Get-ChildItem -Path C:\ -Filter aria2c.exe -Recurse -Depth 5`，找到了则用实际路径；全盘不存在才输出直链让用户手动下载 |
 | RPC 启动失败或端口被占用 | 降级为 CLI 直调模式下载（`aria2c -x 10 -s 10 -o "filename" "URL"`） |
 | RPC 提交失败 | 降级为 CLI 直调模式下载 |
@@ -332,7 +349,7 @@ Get-Process aria2c | Where-Object { $_.Id -ne $null } | Stop-Process
 $aria2c = '$Aria2c'
 $url = '最终下载 URL（GitHub 来源已拼好加速前缀）'
 $out = '$DownloadDir\{filename}'
-& $aria2c -x 10 -s 10 --check-certificate=false -o "$out" "$url"
+& $aria2c -x 10 -s 10 -o "$out" "$url"
 ```
 
 ### Hana 直连降级示例（最后兜底）
